@@ -16,9 +16,6 @@ namespace server
 
     TCPServerClient::status_t TCPServerClient::getStatus() const { return status_; }
 
-    void TCPServerClient::setClientData(void* client_data) { client_data_ = client_data; }
-    void TCPServerClient::setClientHandler(std::function<void()> func) { handler_ = func; }
-
     TCPServerClient::status_t TCPServerClient::disconnect()
     {
         status_ = status_t::DISCONNECTED;

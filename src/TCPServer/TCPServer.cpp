@@ -4,7 +4,51 @@
 
 namespace server
 {
+	TCPServer::TCPServer()
+	{
+	}
 
+	TCPServer::status_t TCPServer::start()
+	{
+		int resp, flag = 1;
+		if (status_ == status_t::UP)
+			stop();
+
+		sockaddr_in address;
+		address.sin_family = AF_INET;
+		address.sin_addr.s_addr = INADDR_ANY;
+		address.sin_port = htons(port_);
+
+		master_socket_ = socket(AF_INET, SOCK_STREAM, 0);
+		if(master_socket_ == -1)
+		{
+			LOGE("Socket init.");
+			return status_ = status_t::ERR_SOCKET_INIT;
+		}
+
+		resp = setsockopt(master_socket_, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
+		if(resp == -1)
+		{
+			LOGE("Socket set SO_REUSEADDR.");
+			return status_ = status_t::ERR_SOCKET_SETOPTION;
+		}
+		
+		resp = bind(master_socket_, (struct sockaddr*)&address, sizeof(address));
+		if(resp < 0)
+		{
+			LOGE("Socket bind.");
+			return status_ = status_t::ERR_SOCKET_BIND;
+		}
+
+		resp = listen(master_socket_, 3);
+		if(resp < 0)
+		{
+			LOGE("Socket listen.");
+			return status_ = status_t::ERR_SOCKET_LISTENING;
+		}
+
+		status_ = status_t::UP;
+	}
 }
 
 /*
@@ -103,7 +147,7 @@ void TCPServer::run()
 		for (int i = 0; i < SERVER_MAX_CLIENTS; i++)
 		{
 			sd = clientSocket_[i];
-				
+
 			if (FD_ISSET( sd , &readfds))
 			{
 				//Check if it was for closing , and also read the
@@ -115,12 +159,12 @@ void TCPServer::run()
 						(socklen_t*)&addrLen_);
 					printf("Host disconnected , ip %s , port %d \n" ,
 						inet_ntoa(address_.sin_addr) , ntohs(address_.sin_port));
-						
+
 					//Close the socket and mark as 0 in list for reuse
 					close( sd );
 					clientSocket_[i] = 0;
 				}
-					
+
 				//Echo back the message that came in
 				else
 				{

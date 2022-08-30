@@ -49,7 +49,22 @@ namespace server
 
         operator bool() { return data_ptr && size; }
     };
+    
+    class ClientDataBase
+    {
+    public:
+        ClientDataBase() = default;
+        virtual ~ClientDataBase() = default;
 
+        virtual void runOnHandle(){};
+        virtual void runOnConnection(){};
+        virtual void runOnEachIteration(){};
+
+        virtual std::string sendOnHandle(){};
+        virtual std::string sendOnConnection(){};
+        virtual std::string sendOnEachIteration(){};
+    };
+    
     class TCPServerClient
     {
         enum status_t : uint8_t
@@ -67,12 +82,8 @@ namespace server
         sockaddr_in address_;
         status_t status_ = status_t::DISCONNECTED;
 
-        void *client_data_ = nullptr;
-        std::function<void()> handler_;
-
     public:
         TCPServerClient(int socket, sockaddr_in address) : socket_(socket), address_(address){};
-        TCPServerClient(int socket, sockaddr_in address, void *client_data, std::function<void()> func) : socket_(socket), address_(address), client_data_(client_data), handler_(func){};
         ~TCPServerClient();
 
         int getId() const;
@@ -80,15 +91,14 @@ namespace server
         uint16_t getPort() const;
         status_t getStatus() const;
 
-        void setClientData(void *client_data);
-        void setClientHandler(std::function<void()> func);
-
         status_t disconnect();
 
         DataBuffer waitData();
 
         bool sendData(const void *buffer, const size_t size) const;
         bool sendData(const DataBuffer &data) const;
+        
+        ClientDataBase client_data;
     };
 
     class TCPServer
@@ -102,6 +112,7 @@ namespace server
             UP = 0,
             ERR_SOCKET_INIT,
             ERR_SOCKET_BIND,
+            ERR_SOCKET_SETOPTION,
             ERR_SOCKET_LISTENING,
             DOWN
         };
@@ -109,6 +120,8 @@ namespace server
     private:
         uint16_t port_;
         int master_socket_;
+        sockaddr_in address;
+        status_t status_ = status_t::DOWN;
 
         std::list<std::unique_ptr<TCPServerClient>> clients_;
         std::vector<std::thread> thread_pool_;
@@ -125,7 +138,10 @@ namespace server
         } threadPool;
 
     public:
-        TCPServer() = default;
+        TCPServer();
+
+        status_t start();
+        status_t stop(){};
 
         uint16_t getPort() const { return port_; };
     };
