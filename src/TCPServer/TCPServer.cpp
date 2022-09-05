@@ -2,9 +2,20 @@
 
 #include "Macros.hpp"
 
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+
 namespace server
 {
-	TCPServer::TCPServer()
+	TCPServer::TCPServer(uint16_t port,
+						 keepAliveConfig KAConfig,
+						 action_handler_function_t connect_handler,
+						 action_handler_function_t disconnect_handler,
+						 action_handler_function_t handler) : port_(port),
+													   keepAliveConfig_(KAConfig),
+													   connect_handler_(connect_handler),
+													   disconnect_handler_(disconnect_handler),
+													   handler_(handler)
 	{
 	}
 
@@ -20,161 +31,142 @@ namespace server
 		address.sin_port = htons(port_);
 
 		master_socket_ = socket(AF_INET, SOCK_STREAM, 0);
-		if(master_socket_ == -1)
+		if (master_socket_ == -1)
 		{
 			LOGE("Socket init.");
 			return status_ = status_t::ERR_SOCKET_INIT;
 		}
 
 		resp = setsockopt(master_socket_, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
-		if(resp == -1)
+		if (resp != 0)
 		{
 			LOGE("Socket set SO_REUSEADDR.");
 			return status_ = status_t::ERR_SOCKET_SETOPTION;
 		}
-		
-		resp = bind(master_socket_, (struct sockaddr*)&address, sizeof(address));
-		if(resp < 0)
+
+		resp = bind(master_socket_, (struct sockaddr *)&address, sizeof(sockaddr_in));
+		if (resp < 0)
 		{
 			LOGE("Socket bind.");
 			return status_ = status_t::ERR_SOCKET_BIND;
 		}
 
 		resp = listen(master_socket_, 3);
-		if(resp < 0)
+		if (resp < 0)
 		{
 			LOGE("Socket listen.");
 			return status_ = status_t::ERR_SOCKET_LISTENING;
 		}
 
+		thread_pool_.addJob([this]{ clientManagerLoop(); });
+		thread_pool_.addJob([this]{ requestWaitLoop(); });
+
 		status_ = status_t::UP;
+
+		return status_;
 	}
-}
 
-/*
-int TCPServer::init()
-{
-	int resp, opt = 1;
-
-	std::fill_n(clientSocket_, SERVER_MAX_CLIENTS, 0);
-
-	masterSocket_ = socket(AF_INET, SOCK_STREAM, 0);
-	CHECK(masterSocket_ > 0, "Create master socket.");
-
-	resp = setsockopt(masterSocket_, SOL_SOCKET, SO_REUSEADDR, (char *)&opt, sizeof(opt));
-	CHECK(resp == 0, "Setup master socket");
-
-	address_.sin_family = AF_INET;
-	address_.sin_addr.s_addr = INADDR_ANY;
-	address_.sin_port = htons(SERVER_PORT);
-
-	resp = bind(masterSocket_, (struct sockaddr *)&address_, sizeof(address_));
-	CHECK(resp == 0, "Bind port.");
-
-	CHECK(listen(masterSocket_, 3) == 0, ("Listener on port %d \n", SERVER_PORT));
-
-	addrLen_ = sizeof(address_);
-
-	return SERVER_OK;
-}
-
-void TCPServer::run()
-{
-	int sd, maxSd, activity;
-	fd_set readfds;
-
-	FD_ZERO(&readfds);
-
-	FD_SET(masterSocket_, &readfds);
-	maxSd = masterSocket_;
-
-	for (int i = 0; i < SERVER_MAX_CLIENTS; i++)
+	void TCPServer::requestWaitLoop()
 	{
-		// socket descriptor
-		sd = clientSocket_[i];
+		client_mutex_.lock();
+		for (auto i = clients_.begin(); i != clients_.end(); i++)
+		{
+			i->get()->waitData();
+		}
+		client_mutex_.unlock();
 
-		// if valid socket descriptor then add to read list
-		if (sd > 0)
-			FD_SET(sd, &readfds);
-
-		// highest file descriptor number, need it for the select function
-		if (sd > maxSd)
-			maxSd = sd;
+		thread_pool_.addJob([this]
+							{ requestWaitLoop(); });
 	}
 
-	activity = select(maxSd + 1, &readfds, NULL, NULL, NULL);
-
-	if ((activity < 0) && (errno != EINTR))
-		LOGE("Select falued.");
-
-	if (FD_ISSET(masterSocket_, &readfds))
+	void TCPServer::clientManagerLoop()
 	{
-		if ((newSocket_ = accept(masterSocket_,
-								 (struct sockaddr *)&address_, (socklen_t *)&addrLen_)) < 0)
+		sockaddr_in address;
+		int addrlen = sizeof(sockaddr_in);
+		int newSocket = accept(master_socket_, (sockaddr *)&address, (socklen_t *)&addrlen);
+
+		if ((status_ != status_t::UP) || (newSocket == -1))
+			return;
+
+		if (keepAliveForClientSetup(newSocket))
 		{
-			perror("accept");
-			exit(EXIT_FAILURE);
+			std::unique_ptr<TCPServerClient> newClient(new TCPServerClient(newSocket, address));
+
+			// thread_pool_.addJob([this, &newClient]
+			//					{ connect_handler_(*newClient); });
+
+			connect_handler_(*newClient);
+
+			client_mutex_.lock();
+			clients_.push_back(std::move(newClient));
+			client_mutex_.unlock();
+		}
+		else
+		{
+			shutdown(newSocket, SHUT_RD);
+			close(newSocket);
 		}
 
-		// inform user of socket number - used in send and receive commands
-		LOGI(
-			("New connection , socket fd is %d , ip is : %s , port : %d\n",
-			newSocket_,
-			inet_ntoa(address_.sin_addr),
-			ntohs(address_.sin_port)));
+		thread_pool_.addJob([this]
+							{ clientManagerLoop(); });
+	}
 
-		// send new connection greeting message
-		if (send(newSocket_, "TEST", strlen("TEST"), 0) != strlen("TEST"))
+	bool TCPServer::keepAliveForClientSetup(int newSocket)
+	{
+		int resp, alive = 1;
+		int idle = (keepAliveConfig_.idle * 1000), intvl = (keepAliveConfig_.intvl * 1000), cnt = keepAliveConfig_.cnt;
+
+		resp = setsockopt(newSocket, SOL_SOCKET, SO_KEEPALIVE, &alive, sizeof(alive));
+		if (resp == -1)
+			return false;
+
+		resp = setsockopt(newSocket, IPPROTO_TCP, TCP_KEEPALIVE, &idle, sizeof(idle));
+		if (resp == -1)
+			return false;
+
+		resp = setsockopt(newSocket, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
+		if (resp == -1)
+			return false;
+
+		resp = setsockopt(newSocket, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt));
+		if (resp == -1)
+			return false;
+
+		return true;
+	}
+
+	void TCPServer::disconnectAll()
+	{
+		client_mutex_.lock();
+
+		for (auto it = clients_.begin(); it != clients_.end(); it++)
 		{
-			perror("send");
+			auto &client = *it;
+			client.get()->disconnect();
 		}
 
-		puts("Welcome message sent successfully");
+	}
 
-		// add new socket to array of sockets
-		for (int i = 0; i < SERVER_MAX_CLIENTS; i++)
-		{
-			// if position is empty
-			if (clientSocket_[i] == 0)
-			{
-				clientSocket_[i] = newSocket_;
-				printf("Adding to list of sockets as %d\n", i);
+	void TCPServer::joinServer()
+	{
+		thread_pool_.join();
+	}
 
-				break;
-			}
-		}
+	TCPServer::status_t TCPServer::stop()
+	{
+		disconnectAll();
+		thread_pool_.terminate();
+		clients_.clear();
 
-		for (int i = 0; i < SERVER_MAX_CLIENTS; i++)
-		{
-			sd = clientSocket_[i];
+		status_ = status_t::STOPED;
 
-			if (FD_ISSET( sd , &readfds))
-			{
-				//Check if it was for closing , and also read the
-				//incoming message
-				if ((valRead_ = read( sd , buffer_, 1024)) == 0)
-				{
-					//Somebody disconnected , get his details and print
-					getpeername(sd , (struct sockaddr*)&address_ , \
-						(socklen_t*)&addrLen_);
-					printf("Host disconnected , ip %s , port %d \n" ,
-						inet_ntoa(address_.sin_addr) , ntohs(address_.sin_port));
+		LOGI("Stoped.");
 
-					//Close the socket and mark as 0 in list for reuse
-					close( sd );
-					clientSocket_[i] = 0;
-				}
+		return status_;
+	}
 
-				//Echo back the message that came in
-				else
-				{
-					//set the string terminating NULL byte on the end
-					//of the data read
-					buffer_[valRead_] = '\0';
-					send(sd , buffer_ , strlen(buffer_) , 0 );
-				}
-			}
-		}
+	TCPServer::~TCPServer()
+	{
+		stop();
 	}
 }
-*/

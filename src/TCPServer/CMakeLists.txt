@@ -1,6 +1,6 @@
 add_library(Server
 TCPServer.cpp
-TCPClient.cpp
+TCPServerClient.cpp
 )
 
 target_link_libraries(Server PRIVATE)

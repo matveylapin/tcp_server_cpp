@@ -8,6 +8,11 @@
 namespace server
 {
 
+    TCPServerClient::TCPServerClient(int socket, sockaddr_in address) : socket_(socket), address_(address)
+    {
+        counters_.resize(CLIENT_COUNTERS_COUNT);
+    }
+
     int TCPServerClient::getId() const {return socket_;}
 
     uint32_t TCPServerClient::getHost() const { return address_.sin_addr.s_addr; }
@@ -31,21 +36,19 @@ namespace server
         return status_;
     }
 
-    DataBuffer TCPServerClient::waitData()
+    TCPServerClient::status_t TCPServerClient::waitData()
     {
         int err;
-        size_t size = 0;
-        DataBuffer buffer;
+        uint32_t size = 0;
 
-        if (status_ != status_t::CONNECTED)
-            return DataBuffer();
+        if (status_ != status_t::CONNECTED) return status_t::ERR_WAITDATA;
 
         int res = recv(socket_, (char *)&size, sizeof(size), MSG_DONTWAIT);
 
         if (!res)
         {
             disconnect();
-            return DataBuffer();
+            return status_t::ERR_WAITDATA;
         }
         else if (res == -1)
         {
@@ -63,40 +66,44 @@ namespace server
             case EPIPE:
                 disconnect();
             case EAGAIN:
-                return DataBuffer();
+                return status_t::ERR_WAITDATA;
             default:
                 disconnect();
                 LOGE(std::strerror(err));
             }
         }
 
-        if (!size)
-            return DataBuffer();
-        buffer.size = size;
-        recv(socket_, (void *)buffer.data_ptr, buffer.size, 0);
+        if (size == 0)
+            return status_t::ERR_WAITDATA;
 
-        return buffer;
+        //char* buffer = (char *)calloc(size, sizeof(char));
+        char* buffer = (char *)malloc(size);
+        recv(socket_, (void *)buffer, size, 0);
+        //LOGE(std::strerror(err));
+        processData(std::string(buffer, size));
+
+        return status_t::ERR_WAITDATA;
     }
 
-    bool TCPServerClient::sendData(const void *buffer, const size_t size) const
+    bool TCPServerClient::sendDataBuffer(const void *buffer, const size_t size)
     {
         if (status_ != status_t::CONNECTED) return false;
 
-        if(send(socket_, buffer, size, 0) < 0) return false;
+        int resp = send(socket_, buffer, size, 0);
+        
+        if(resp < 0) return false;
+
         return true;
     }
 
-    bool TCPServerClient::sendData(const DataBuffer &data) const
+    void TCPServerClient::processData(std::string s)
     {
-        return sendData(data.data_ptr, data.size);
+        LOGI(s);
+        LOGI(s.length());
     }
 
     TCPServerClient::~TCPServerClient()
     {
-        if (socket_ == -1)
-            return;
-
-        shutdown(socket_, SHUT_RD);
-        close(socket_);
+        disconnect();
     }
 }

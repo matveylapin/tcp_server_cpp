@@ -4,6 +4,7 @@
 #include <thread>
 #include <vector>
 #include <queue>
+#include <mutex>
 
 #include <iostream>
 #include <stdio.h>
@@ -17,73 +18,35 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 
-#include <netinet/in.h>
+#include "ThreadPool.hpp"
 
-#define SERVER_PORT 8888
+#define CLIENT_COUNTERS_COUNT 3
+
+#define DEFAULT_SERVER_PORT (uint16_t)(9999)
 #define SERVER_MAX_CLIENTS 30
-
-#define SERVER_OK 0
-#define SERVER_ERROR 1
 
 namespace server
 {
 
-    class DataBuffer
+    struct keepAliveConfig
     {
-    public:
-        size_t size = 0;
-        void *data_ptr = nullptr;
-
-        DataBuffer() = default;
-        DataBuffer(void *data_ptr, int size) : data_ptr(data_ptr), size(size) {}
-        DataBuffer(const DataBuffer &data) : data_ptr(malloc(data.size)), size(data.size) { memcpy(data.data_ptr, data_ptr, size); }
-        DataBuffer(DataBuffer &&data) : data_ptr(data.data_ptr), size(data.size) { data.data_ptr = nullptr; }
-
-        ~DataBuffer()
-        {
-            if (data_ptr)
-                free(data_ptr);
-        }
-
-        bool isEmpty() { return data_ptr || size; }
-
-        operator bool() { return data_ptr && size; }
+        uint16_t idle = 120, intvl = 10, cnt = 5;
     };
-    
-    class ClientDataBase
-    {
-    public:
-        ClientDataBase() = default;
-        virtual ~ClientDataBase() = default;
 
-        virtual void runOnHandle(){};
-        virtual void runOnConnection(){};
-        virtual void runOnEachIteration(){};
-
-        virtual std::string sendOnHandle(){};
-        virtual std::string sendOnConnection(){};
-        virtual std::string sendOnEachIteration(){};
-    };
-    
     class TCPServerClient
     {
+    public:
         enum status_t : uint8_t
         {
             CONNECTED = 0,
             ERR_SOCKET_INIT,
             ERR_SOCKET_BIND,
             ERR_SOCKET_LISTENING,
+            ERR_WAITDATA,
             DISCONNECTED
         };
 
-    private:
-        int socket_;
-        std::mutex access_mutex_;
-        sockaddr_in address_;
-        status_t status_ = status_t::DISCONNECTED;
-
-    public:
-        TCPServerClient(int socket, sockaddr_in address) : socket_(socket), address_(address){};
+        TCPServerClient(int socket, sockaddr_in address);
         ~TCPServerClient();
 
         int getId() const;
@@ -93,19 +56,38 @@ namespace server
 
         status_t disconnect();
 
-        DataBuffer waitData();
+        status_t waitData();
+        bool sendDataBuffer(const void *buffer, const size_t size);
 
-        bool sendData(const void *buffer, const size_t size) const;
-        bool sendData(const DataBuffer &data) const;
-        
-        ClientDataBase client_data;
+    private:
+        typedef struct
+        {
+            uint64_t start = 0, now = 0, step = 0;
+            uint64_t getNext()
+            {
+                now = (now + step >= start) ? (now + step) : start;
+                return now;
+            };
+            bool isDataSet()
+            {
+                return (start != 0) || (step != 0);
+            };
+        } counter_t;
+
+        int socket_;
+        std::mutex access_mutex_;
+        sockaddr_in address_;
+        status_t status_ = status_t::CONNECTED;
+        std::vector<counter_t> counters_;
+
+        void processData(std::string s);
     };
 
     class TCPServer
     {
+    public:
+        typedef std::function<void(const TCPServerClient &)> action_handler_function_t;
         typedef std::list<std::unique_ptr<TCPServerClient>>::iterator ClientsIterator_t;
-        typedef std::function<void(TCPServerClient &, DataBuffer)> handler_function_t;
-        typedef std::function<void(TCPServerClient &)> action_handler_function_t;
 
         enum status_t : uint8_t
         {
@@ -114,36 +96,45 @@ namespace server
             ERR_SOCKET_BIND,
             ERR_SOCKET_SETOPTION,
             ERR_SOCKET_LISTENING,
-            DOWN
+            STOPED
         };
 
-    private:
-        uint16_t port_;
-        int master_socket_;
-        sockaddr_in address;
-        status_t status_ = status_t::DOWN;
+        TCPServer(uint16_t port = DEFAULT_SERVER_PORT,
+                  keepAliveConfig KAConfig = {},
+                  action_handler_function_t connect_handler = {},
+                  action_handler_function_t disconnect_handler = {},
+                  action_handler_function_t handler = {});
 
-        std::list<std::unique_ptr<TCPServerClient>> clients_;
-        std::vector<std::thread> thread_pool_;
-        std::queue<std::function<void()>> job_queue;
-
-        class ThreadPool
-        {
-            template <typename F>
-            void addJob(F job);
-            template <typename F, typename... Arg>
-            void addJob(const F &job, const Arg &...args);
-            void join();
-            void dropAll();
-        } threadPool;
-
-    public:
-        TCPServer();
+        ~TCPServer();
 
         status_t start();
-        status_t stop(){};
+        status_t stop();
+        void disconnectAll();
 
         uint16_t getPort() const { return port_; };
+
+        void joinServer();
+
+    private:
+        status_t status_ = status_t::STOPED;
+
+        uint16_t port_;
+        int master_socket_;
+        keepAliveConfig keepAliveConfig_;
+
+        std::mutex client_mutex_;
+
+        action_handler_function_t connect_handler_ = {};
+        action_handler_function_t disconnect_handler_ = {};
+        action_handler_function_t handler_ = {};
+
+        ThreadPool thread_pool_;
+
+        std::list<std::unique_ptr<TCPServerClient>> clients_;
+
+        void clientManagerLoop();
+        void requestWaitLoop();
+        bool keepAliveForClientSetup(int socket);
     };
 
 }
