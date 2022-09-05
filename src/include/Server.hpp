@@ -49,6 +49,9 @@ namespace server
         TCPServerClient(int socket, sockaddr_in address);
         ~TCPServerClient();
 
+        void lock();
+        void unlock();
+
         int getId() const;
         uint32_t getHost() const;
         uint16_t getPort() const;
@@ -57,7 +60,7 @@ namespace server
         status_t disconnect();
 
         status_t waitData();
-        bool sendDataBuffer(const void *buffer, const size_t size);
+        bool sendDataBuffer(const void *buffer, const size_t size) const;
 
     private:
         typedef struct
@@ -87,7 +90,6 @@ namespace server
     {
     public:
         typedef std::function<void(const TCPServerClient &)> action_handler_function_t;
-        typedef std::list<std::unique_ptr<TCPServerClient>>::iterator ClientsIterator_t;
 
         enum status_t : uint8_t
         {
@@ -121,6 +123,7 @@ namespace server
         uint16_t port_;
         int master_socket_;
         keepAliveConfig keepAliveConfig_;
+        sockaddr_in server_addr_;
 
         std::mutex client_mutex_;
 

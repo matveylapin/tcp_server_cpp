@@ -24,7 +24,6 @@ void con_hander(const TCPServerClient &client);
 void hander(const TCPServerClient &client);
 
 
-
 TCPServer myserver(
 	DEFAULT_SERVER_PORT,
 	{},
@@ -34,10 +33,10 @@ TCPServer myserver(
 
 void con_hander(const TCPServerClient &client)
 {
-	char msg[] = "Hello \n";
-	int len = sizeof(msg);
-	//client.sendData((void *)msg, len);
-	// LOGI(client.getId());
+	const char msg[] = "Hello \n";
+	const int len = sizeof(msg);
+	client.sendDataBuffer((void *)msg, len);
+	LOGI(client.getId());
 }
 
 void hander(const TCPServerClient &client)

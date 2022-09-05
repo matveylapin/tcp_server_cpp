@@ -12,10 +12,10 @@ namespace server
 						 action_handler_function_t connect_handler,
 						 action_handler_function_t disconnect_handler,
 						 action_handler_function_t handler) : port_(port),
-													   keepAliveConfig_(KAConfig),
-													   connect_handler_(connect_handler),
-													   disconnect_handler_(disconnect_handler),
-													   handler_(handler)
+															  keepAliveConfig_(KAConfig),
+															  connect_handler_(connect_handler),
+															  disconnect_handler_(disconnect_handler),
+															  handler_(handler)
 	{
 	}
 
@@ -25,10 +25,10 @@ namespace server
 		if (status_ == status_t::UP)
 			stop();
 
-		sockaddr_in address;
-		address.sin_family = AF_INET;
-		address.sin_addr.s_addr = INADDR_ANY;
-		address.sin_port = htons(port_);
+		// sockaddr_in address;
+		server_addr_.sin_family = AF_INET;
+		server_addr_.sin_addr.s_addr = INADDR_ANY;
+		server_addr_.sin_port = htons(port_);
 
 		master_socket_ = socket(AF_INET, SOCK_STREAM, 0);
 		if (master_socket_ == -1)
@@ -44,7 +44,7 @@ namespace server
 			return status_ = status_t::ERR_SOCKET_SETOPTION;
 		}
 
-		resp = bind(master_socket_, (struct sockaddr *)&address, sizeof(sockaddr_in));
+		resp = bind(master_socket_, (struct sockaddr *)&server_addr_, sizeof(sockaddr_in));
 		if (resp < 0)
 		{
 			LOGE("Socket bind.");
@@ -58,8 +58,10 @@ namespace server
 			return status_ = status_t::ERR_SOCKET_LISTENING;
 		}
 
-		thread_pool_.addJob([this]{ clientManagerLoop(); });
-		thread_pool_.addJob([this]{ requestWaitLoop(); });
+		thread_pool_.addJob([this]
+							{ clientManagerLoop(); });
+		thread_pool_.addJob([this]
+							{ requestWaitLoop(); });
 
 		status_ = status_t::UP;
 
@@ -71,7 +73,10 @@ namespace server
 		client_mutex_.lock();
 		for (auto i = clients_.begin(); i != clients_.end(); i++)
 		{
-			i->get()->waitData();
+			thread_pool_.addJob([i]
+								{i->get()->lock();
+								i->get()->waitData();
+								i->get()->unlock(); });
 		}
 		client_mutex_.unlock();
 
@@ -90,15 +95,17 @@ namespace server
 
 		if (keepAliveForClientSetup(newSocket))
 		{
-			std::unique_ptr<TCPServerClient> newClient(new TCPServerClient(newSocket, address));
+			TCPServerClient* newClient = new TCPServerClient(newSocket, address);
 
-			// thread_pool_.addJob([this, &newClient]
-			//					{ connect_handler_(*newClient); });
+			thread_pool_.addJob([this, &newClient]
+								{ this->connect_handler_(*newClient); });
 
-			connect_handler_(*newClient);
+			//std::unique_ptr<TCPServerClient> newClient_unique = std::make_unique<TCPServerClient>(newClient);
+
+			std::unique_ptr<TCPServerClient, std::function<void(TCPServerClient*)>> newClient_unique(newClient, TCPServerClient::~TCPServerClient);
 
 			client_mutex_.lock();
-			clients_.push_back(std::move(newClient));
+			clients_.push_back(std::move(newClient_unique));
 			client_mutex_.unlock();
 		}
 		else
@@ -144,7 +151,6 @@ namespace server
 			auto &client = *it;
 			client.get()->disconnect();
 		}
-
 	}
 
 	void TCPServer::joinServer()
