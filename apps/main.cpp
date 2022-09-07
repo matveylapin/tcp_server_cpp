@@ -18,11 +18,8 @@ uint64_t stringToU64(const std::string &str)
 
 void con_hander(const TCPServerClient &client)
 {
-	std::string msg = "Hello!!!\n \
-						Commands for use:\n \
-						seq<1|2|3> <start_value> <step_value> - setting up counter 1, 2 or 3\n \
-						export seq - start sending values\n \
-						stop seq - stop sending values\n";
+	std::string msg =
+	"Hello!!!\n Commands for use:\n seq<1|2|3> <start_value> <step_value> - setting up counter 1, 2 or 3\n export seq - start sending values\n stop seq - stop sending values\n";
 	client.sendData(msg);
 	LOGI(client.getId());
 }
