@@ -6,25 +6,24 @@ void ThreadPool::ThreadLoop()
 {
     while (true)
     {
-        int job_id = -1;
+        int job_id;
         std::function<void()> job;
-        std::unique_lock<std::mutex> lock(jobs_queue_mutex_);
+        
+        if (terminate_) return;
 
-        if (terminate_)
-            return lock.unlock();
+        jobs_queue_mutex_.lock();
 
-        condition_threads_.wait(lock, [this]
-                                { return !job_queue_.empty(); });
+        if (job_queue_.empty())
+        {
+            jobs_queue_mutex_.unlock();
+            continue;
+        }
 
         job_id = job_queue_.front().first;
         job = job_queue_.front().second;
         job_queue_.pop();
 
-        lock.unlock();
-
-        treads_vector_mutex_.lock();
-
-        treads_vector_mutex_.unlock();
+        jobs_queue_mutex_.unlock();
 
         job();
     }
@@ -33,18 +32,12 @@ void ThreadPool::ThreadLoop()
 void ThreadPool::setup(uint32_t threads_count)
 {
     jobs_queue_mutex_.lock();
-
     terminate_ = false;
-    // thread_pool_.resize(threads_count);
 
     for (uint32_t i = 0; i < threads_count; i++)
-    {
-        treads_vector_mutex_.lock();
-
         thread_pool_.push_back(std::thread([this]
                                            { ThreadLoop(); }));
-        treads_vector_mutex_.unlock();
-    }
+    
     jobs_queue_mutex_.unlock();
 }
 
@@ -65,16 +58,37 @@ void ThreadPool::addJob(const std::function<void()> &job)
     addJob(job, 0);
 }
 
-void ThreadPool::addJob(const std::function<void()> &job, int jobs_id)
+void ThreadPool::addJob(const std::function<void()> &job, int job_id)
 {
-    // std::unique_lock<std::mutex> lock(jobs_queue_mutex_);
     jobs_queue_mutex_.lock();
-    std::pair<int, std::function<void()>> newJob(jobs_id, job);
+    std::pair<int, std::function<void()>> newJob(job_id, job);
 
     job_queue_.emplace(newJob);
     condition_threads_.notify_one();
 
     jobs_queue_mutex_.unlock();
+}
+
+bool ThreadPool::isJobInQueue(int job_id)
+{
+    jobs_queue_mutex_.lock();
+    std::queue<std::pair<int, std::function<void()>>> queue_copy = job_queue_;
+    
+    while (!queue_copy.empty())
+    {
+        auto tmpJob = queue_copy.front();
+        queue_copy.pop();
+        
+        if (tmpJob.first == job_id)
+        {
+            jobs_queue_mutex_.unlock();
+            return true;
+        }
+    }
+
+    jobs_queue_mutex_.unlock();
+
+    return false;
 }
 
 void ThreadPool::run(uint32_t threads_count)
@@ -110,6 +124,3 @@ void ThreadPool::join()
         i.join();
 }
 
-void ThreadPool::join(int jobs_id)
-{
-}
